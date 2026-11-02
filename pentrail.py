@@ -1,4 +1,50 @@
-#!/usr/bin/env python3
+#!/bin/sh
+# Compiling this file is most of the time a run takes, and Python caches compiled code only
+# for modules it imports, never for the file it starts with. So /bin/sh runs the statement
+# below: it starts Python (isolated, without site) with a small loader that keeps the
+# compiled pentrail in ~/.cache/pentrail and runs it from there: a hook call takes about
+# 0.13 s instead of 0.34 s. To Python it is just a string; 'python3 pentrail.py' works
+# as before.
+"exec" "python3" "-I" "-S" "-c" """
+import sys
+def boot():
+    import os, marshal, zlib
+    f = os.path.abspath(sys.argv[1])
+    st = os.stat(f)
+    key = (os.path.realpath(f), st.st_mtime_ns, st.st_size, sys.version)
+    d = os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache'), 'pentrail')
+    c = os.path.join(d, '%08x-%s.code' % (zlib.crc32(key[0].encode()), sys.implementation.cache_tag))
+    def mine(p):
+        s = os.stat(p)
+        return s.st_uid == os.getuid() and not s.st_mode & 0o022
+    try:
+        if mine(d) and mine(c):
+            with open(c, 'rb') as h:
+                k, code = marshal.load(h)
+            if k == key:
+                return f, code
+    except Exception:
+        pass
+    with open(f, 'rb') as h:
+        code = compile(h.read(), f, 'exec', dont_inherit=True)
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        if mine(d):
+            t = '%s.%d.tmp' % (c, os.getpid())
+            with os.fdopen(os.open(t, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'wb') as h:
+                marshal.dump((key, code), h)
+            os.replace(t, c)
+    except OSError:
+        pass
+    return f, code
+f, code = boot()
+m = type(sys)('__main__')
+m.__file__ = f
+sys.modules['__main__'] = m
+sys.argv = [f] + sys.argv[2:]
+exec(code, m.__dict__)
+""" "$0" "$@"
+"exit" "127"
 """pentrail - the pentest logbook.
 
 Starts an engagement (VPN + a project folder laid out by methodology phase) and
@@ -13,7 +59,6 @@ programs you are authorized to test (HTB, OffSec, a scoped client engagement).
 
 Pure Python 3, standard library only.
 """
-import argparse
 import base64
 import fnmatch
 import functools
@@ -38,7 +83,7 @@ try:
 except ImportError:
     fcntl = None
 
-VERSION = "1.8"                 # bump on every update (point release); see CHANGELOG.md
+VERSION = "1.9"                 # bump on every update (point release); see CHANGELOG.md
 SCHEMA = 2                      # state.json layout version; _migrate() upgrades older files
 HOME = Path.home()
 CONFIG_FILE = Path(os.environ.get("PENTRAIL_CONFIG", HOME / ".config" / "pentrail" / "config.json"))
@@ -50,6 +95,7 @@ CURRENT_FILE = STATE_DIR / "current"
 CAPTURE_MARKER = STATE_DIR / "capture.json"
 HOOK_DIR = STATE_DIR / "hook"                 # rc files the capture shell loads (scope guard)
 REDACT_FILE = CONFIG_FILE.parent / "redact"   # operator's own secrets, stored as hashes
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "pentrail"   # compiled pentrail (top of file)
 
 DEFAULTS = {
     "base_dir": str(HOME / "pentests"),
@@ -3363,8 +3409,19 @@ shopt -s extdebug
 trap '__pt_debug' DEBUG
 """
 
+# The loader in the first lines of this file: as the first statement it is also __doc__.
+_BOOT_HEAD, _BOOT_TAIL = "execpython3-I-S-c", "$0$@"
+
+def _loader():
+    doc = __doc__ or ""
+    return doc[len(_BOOT_HEAD):-len(_BOOT_TAIL)] if doc.startswith(_BOOT_HEAD) and doc.endswith(_BOOT_TAIL) else None
+
 def _hook_bin():
-    return " ".join(shlex.quote(x) for x in (sys.executable, "-I", "-S", str(Path(__file__).resolve())))
+    """How the capture shell runs pentrail: this interpreter, isolated, through the loader
+    at the top of this file (so each command starts from the compiled cache)."""
+    boot = _loader()
+    return " ".join(shlex.quote(x) for x in (sys.executable, "-I", "-S", *(("-c", boot) if boot else ()),
+                                             str(Path(__file__).resolve())))
 
 def capture_shell(env, plain=False):
     """(extra 'script' args, env) to start the user's shell with the hook loaded.
@@ -7033,6 +7090,12 @@ def cmd_uninstall(args):
     for p in paths:
         if ask(f"Remove {p} (sudo)?") and run([*SUDO, "rm", "-f", str(p)]) == 0 and not dry:
             ok(f"Removed {p}")
+    if not args.no_launcher and CACHE_DIR.is_dir():   # the compiled pentrail: rebuilt by the next run
+        if dry:
+            info(f"[dry-run] would delete the compiled cache {_tilde(CACHE_DIR)}")
+        else:
+            shutil.rmtree(CACHE_DIR, ignore_errors=True)
+            ok(f"Removed the compiled cache {_tilde(CACHE_DIR)}")
 
     # 2. Shell helper --------------------------------------------------------
     print(); _step("2. Shell helper")
@@ -7323,10 +7386,11 @@ DETAILS = {
         "pentrail update   ;   pentrail update --branch main --yes"),
     "uninstall": ("Undo 'pentrail setup' - remove what it installed, keep your work.",
         "pentrail uninstall [--config] [--no-launcher] [--yes] [--dry-run]",
-        ["Removes the /usr/local/bin/pentrail launcher (sudo), the pcd() helper from your",
-         " shell rc and the AI layer's copy in ~/.local/share/pentrail/ai. If the VPN is still",
-         " connected it offers to stop it first, since the root daemon would otherwise be",
-         " left with no 'pentrail down' to stop it. --no-launcher keeps the launcher.",
+        ["Removes the /usr/local/bin/pentrail launcher (sudo) and its compiled cache in",
+         " ~/.cache/pentrail, the pcd() helper from your shell rc and the AI layer's copy in",
+         " ~/.local/share/pentrail/ai. If the VPN is still connected it offers to stop it",
+         " first, since the root daemon would otherwise be left with no 'pentrail down' to",
+         " stop it. --no-launcher keeps the launcher.",
          "Projects with PeTe in them keep it; 'pentrail ai remove <project>' takes it out.",
          "--config also deletes your config and VPN state (~/.config/pentrail and",
          " ~/.local/state/pentrail, including the redact list). Your pentest projects in",
@@ -7659,6 +7723,7 @@ DETAILS.update({
 
 # ----------------------------------------------------------------------------- CLI
 def build_parser():
+    import argparse         # here, not at the top: the hooks never parse a command line
     p = argparse.ArgumentParser(prog="pentrail", description="the pentest logbook (authorized work only)")
     p.add_argument("--version", "-V", action="version", version=f"pentrail {VERSION}")
     sub = p.add_subparsers(dest="cmd")

@@ -5,6 +5,36 @@ releases**: every update bumps the version (1.0 → 1.1 → 1.2 …). The versio
 in `pentrail.py` (`VERSION`) and `pentrail version` prints it; `pentrail update`
 shows the old → new version when it reinstalls.
 
+## 1.9
+
+pentrail starts from its compiled code: every command, and above all the check the
+capture shell runs before each command, is about two and a half times faster.
+
+Changed
+- Compiling the 7,900 lines of pentrail.py took about 0.34 s of every run, and Python never
+  caches the file it starts with. pentrail.py now begins with a two-line header that
+  `/bin/sh` runs and Python reads as a plain string. Run as a program (the launcher setup
+  installs, or `./pentrail.py`), it starts Python isolated (`-I -S`) with a small loader
+  that keeps the compiled pentrail in `~/.cache/pentrail` (`$XDG_CACHE_HOME`): one file per
+  Python version, rebuilt when the file changes, written as 0600 in a 0700 folder, and
+  never read when someone else could have written it. The capture shell's check before a
+  command and its update after one, PeTe's guardrail and the status line each went from
+  about 0.34 s to 0.13 s on the test machine. `python3 pentrail.py` works as before and
+  compiles every time. The install layout is unchanged: one file, copied by setup and
+  update.
+- The capture shell runs pentrail through the same loader.
+- argparse is imported only when a command line is parsed (the hooks never do).
+- `pentrail uninstall` removes the compiled cache along with the launcher.
+
+Added
+- Launcher tests: the cache is used, a cache folder others can write is ignored, a broken
+  cache is rebuilt, arguments, stdin and exit codes pass through unchanged, it runs under
+  dash, bash, zsh and busybox sh, and a `json.py` in the working folder (a project folder
+  may hold files from a target) is never imported.
+- A capture driven in a real terminal, typed at the prompt like a person: `nmap` on
+  8.8.8.8 is BLOCKED and never runs, on the in-scope host it runs (a stand-in `nmap`, so
+  no traffic is sent). Until now nothing tested the guard inside a live capture shell.
+
 ## 1.8
 
 A test suite, PeTe in Claude Code's status line, and a launcher check.

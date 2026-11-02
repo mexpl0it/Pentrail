@@ -498,10 +498,16 @@ asks whether to turn on `auto_shot`. By hand:
 `sudo install -m 755 pentrail.py /usr/local/bin/pentrail`.
 
 `pentrail update` pulls the source checkout, reinstalls the launcher and refreshes the AI
-layer's copy if you have one. `pentrail uninstall` removes the launcher, the shell helper
-and the AI layer's copy (`--no-launcher` keeps the launcher); your projects are never
+layer's copy if you have one. `pentrail uninstall` removes the launcher and its compiled
+cache, the shell helper and the AI layer's copy (`--no-launcher` keeps the launcher); your projects are never
 deleted, and PeTe stays in the projects that have it. Config lives in `~/.config/pentrail/config.json` and VPN state in
 `~/.local/state/pentrail/`.
+
+The first lines of `pentrail.py` are for `/bin/sh`: they start Python with a small loader
+that keeps the compiled pentrail in `~/.cache/pentrail` (a folder only you can write;
+rebuilt when pentrail changes). That matters most in a capture, where every command that
+names a host is checked before it runs: the check takes about 0.13 s instead of 0.34 s.
+`python3 pentrail.py` works too; it just compiles the file every time.
 
 `pentrail doctor` checks the tools, your config and the `pentrail` on your PATH: when that
 copy is older than the checkout you run doctor from, it says so (`pentrail update`).
@@ -566,6 +572,6 @@ python3 -m unittest discover -s tests -v
 ```
 
 Standard library only, under a throwaway `$HOME`, with no network traffic and no `sudo`. The
-suite covers the scope guard and its exit codes, a real capture, parsing, password masking, the guardrail
+suite covers the launcher and its compiled cache, the scope guard and its exit codes, a real capture, parsing, password masking, the guardrail
 hook, the session brief, and installing, merging and removing the AI layer. GitHub Actions
 runs it on Python 3.8, 3.10 and 3.13 (`.github/workflows/tests.yml`).

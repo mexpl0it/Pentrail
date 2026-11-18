@@ -1,9 +1,90 @@
 # Changelog
 
-All notable changes to pentrail are recorded here. pentrail uses **point
-releases**: every update bumps the version (1.0 → 1.1 → 1.2 …). The version lives
-in `pentrail.py` (`VERSION`) and `pentrail version` prints it; `pentrail update`
-shows the old → new version when it reinstalls.
+All notable changes to pentrail. Versions follow [Semantic Versioning](https://semver.org)
+since 1.10.0 (1.0 to 1.9 were point releases). `VERSION` in `pentrail.py` is the release,
+`ai/VERSION` the release that last changed the AI layer; how a change becomes a release is
+in `CONTRIBUTING.md`.
+
+## 1.10.0
+
+PeTe ships with pentrail and keeps a record you can audit and repeat; a capture is read
+while you work and cannot be forged by a target; `up` no longer times out on a tunnel that
+is up; `new` only asks about a VPN and `/etc/hosts` for IP targets.
+
+Fixed
+- **A capture read some commands only at `exit`.** The shell hook reads a command at once
+  only when its line names a host (an IP, a dotted name, `$`, `@`, `://`) or it ran 10 s or
+  more; anything else waited for the next such command or for `exit`, out of sight of an
+  assistant in another terminal. The capture now reads every finished command within about
+  two seconds itself. In zsh the hook no longer depends on `add-zsh-hook` (where that could
+  not load, nothing was read or guarded until `exit`), and a capture whose hook did not
+  load says so.
+- **`pentrail up` timed out on a tunnel that was up.** openvpn makes its log 0600, so under
+  sudo pentrail could not read it. pentrail now creates the log itself, and also counts a
+  new tun/tap address while openvpn runs as connected.
+- `shot` recorded its command with the quoting lost (`sh -c nmap ... | head`); it now keeps
+  the line quoted as a shell needs it.
+- `pentrail new` asked its questions whenever the keyboard was a terminal, also when its
+  output went to a file or pipe where nobody saw them, and then waited forever. It asks
+  only when both are a terminal.
+
+Security
+- **Output a target controls could forge the record.** Bytes in a page, banner or file
+  that looked like pentrail's command markers added commands that never ran (or hid ones
+  that did), a fake `# Nmap ... as: <command>` line in a scan file named its own command,
+  and prompt-like lines did the same in recordings without markers. With `runbook` such a
+  command would become a step. Every capture now has a random key that signs the shell
+  hook's markers and the brackets around pentrail's own output; unsigned ones are plain
+  text. Markers in saved files are never trusted, a scan file's command line comes only
+  from nmap's own first line, commands guessed from prompt lines are marked unverified, and
+  `runbook` leaves steps from files or guesses commented out.
+- `pentrail shot` refuses a tool the PeTe rules deny when it runs as an actor (PeTe, a
+  script), so a script started by an assistant cannot run it either (exit 3, logged).
+- `THREAT-MODEL.md`: what pentrail is trusted with, the threats, what it does about them,
+  and what is left to you.
+
+Added
+- **The AI layer is in the repository** (`ai/`). It was described since 1.5 but never
+  committed, so `pentrail ai install` found nothing. PeTe's prompt, the PeTe rules (a test
+  keeps them equal to pentrail's defaults), the Claude Code settings (permissions, a
+  guardrail hook that fails closed, the session brief, the status line) and 14 skills,
+  among them two new ones: `audit-trail` (keeping the record) and `retest` (running work
+  again). `ai/THIRD-PARTY-NOTICES.md` (1.5) is gone: the layer was rewritten and holds no
+  third-party text.
+- **`pentrail pete`** is another name for `pentrail ai`; on its own it shows PeTe's status
+  in the active project and what to do next.
+- **`shot --why "<reason>"`** keeps the reason with the command (`trace`, the logbook,
+  `runbook`). PeTe gives one with every command.
+- **`trace --by <who>`**: one actor's commands (`--by pete`, `--by you`).
+- **`pentrail runbook`**: what ran (filters as `trace`, plus `--phase` and `--ids`) as a
+  script that runs each step again through `shot --why "rerun of #<id>"`, so the scope is
+  checked again and the rerun is recorded next to the original. Steps that need a masked
+  credential, interactive sessions and command lines read from files stay commented out.
+- **`pentrail hostfile add [ip] <name...> | list | rm | clean [--all]`**: names for a box in
+  `/etc/hosts`, one tagged line per name; it says whether the name is in scope, and changes
+  a line of yours only after your yes. `resolve` uses the same code.
+- `new --vpn`: start the VPN without asking.
+- Tests (`tests/`, standard library, throwaway `$HOME`, no network, no sudo) and GitHub
+  Actions on Python 3.8, 3.10 and 3.13; `scripts/submit.sh` to commit, push, open the pull
+  request and release;
+  `CONTRIBUTING.md` (branches, SemVer, releases); Claude Code skills for working on
+  pentrail in `.claude/skills/`.
+
+Changed
+- `pentrail new` asks about the VPN only when a target is an IP or a range, then which
+  hostnames to put in `/etc/hosts`; with domains only (bug bounty) it asks neither. Without
+  a terminal it starts nothing unless `--vpn`.
+- Versions are SemVer from here on; `ai/VERSION` follows the release that last changed `ai/`.
+- `1-enum/enum.md` holds what was found per host, no longer a checklist of commands to run.
+  An existing checklist section goes on the next sync; your own text stays.
+- `pentrail next` shows what you did: per open port the commands that ran against it (id,
+  time, who and why when it was not you) and the coverage scans still missing. The
+  standard steps as commands to run are behind `next --steps` (or `pentrail suggest`);
+  `next --json` is unchanged. The home screen no longer suggests a command.
+- The home screen and `pentrail log` print the logbook without Markdown, and the home
+  screen shows the start-to-report guide only when no project is active.
+- The README is a third of its old length; the details live in `pentrail help <command>`.
+- `pentrail.py` is executable in the repository, so `./pentrail.py` runs it from a checkout.
 
 ## 1.9
 

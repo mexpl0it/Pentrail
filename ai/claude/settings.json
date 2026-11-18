@@ -1,0 +1,132 @@
+{
+  "env": {
+    "PENTRAIL_ACTOR": "pete"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pentrail shot -q --by pete *)",
+      "Bash(pentrail status)",
+      "Bash(pentrail st)",
+      "Bash(pentrail hosts *)",
+      "Bash(pentrail map *)",
+      "Bash(pentrail names *)",
+      "Bash(pentrail vectors *)",
+      "Bash(pentrail vector add *)",
+      "Bash(pentrail vector open *)",
+      "Bash(pentrail vector working *)",
+      "Bash(pentrail vector dead *)",
+      "Bash(pentrail vector done *)",
+      "Bash(pentrail next *)",
+      "Bash(pentrail suggest *)",
+      "Bash(pentrail seen *)",
+      "Bash(pentrail trace *)",
+      "Bash(pentrail show *)",
+      "Bash(pentrail runbook *)",
+      "Bash(pentrail note *)",
+      "Bash(pentrail notes *)",
+      "Bash(pentrail log *)",
+      "Bash(pentrail ingest *)",
+      "Bash(pentrail scope)",
+      "Bash(pentrail scope check *)",
+      "Bash(pentrail hostfile)",
+      "Bash(pentrail hostfile list)",
+      "Bash(pentrail docs)",
+      "Bash(pentrail dir)",
+      "Bash(pentrail version)",
+      "Bash(pentrail help *)",
+      "Bash(pentrail doctor)",
+      "Bash(pentrail ai brief)",
+      "Bash(pentrail ai status *)",
+      "Bash(pentrail pete brief)",
+      "Bash(pentrail pete status *)"
+    ],
+    "ask": [
+      "Bash(pentrail finding *)",
+      "Bash(pentrail findings *)",
+      "Bash(pentrail report *)",
+      "Bash(pentrail phase *)",
+      "Bash(pentrail target *)",
+      "Bash(pentrail use *)",
+      "Bash(pentrail new *)",
+      "Bash(pentrail resume *)",
+      "Bash(pentrail cred *)",
+      "Bash(pentrail creds *)",
+      "Bash(pentrail flag *)",
+      "Bash(pentrail set *)",
+      "Bash(pentrail focus *)",
+      "Bash(pentrail host *)",
+      "Bash(pentrail pivot *)",
+      "Bash(pentrail vector rm *)",
+      "Bash(pentrail notes rm *)",
+      "Bash(pentrail notes edit *)",
+      "Bash(pentrail scope resolve *)",
+      "Bash(pentrail hostfile add *)",
+      "Bash(pentrail hostfile rm *)",
+      "Bash(pentrail hostfile clean *)",
+      "Bash(pentrail resolve *)",
+      "Bash(pentrail up *)",
+      "Bash(pentrail down *)",
+      "Bash(pentrail restart *)",
+      "Bash(sudo *)"
+    ],
+    "deny": [
+      "Bash(pentrail scope add *)",
+      "Bash(pentrail scope in *)",
+      "Bash(pentrail scope out *)",
+      "Bash(pentrail scope exclude *)",
+      "Bash(pentrail scope guard *)",
+      "Bash(pentrail config *)",
+      "Bash(pentrail ai install *)",
+      "Bash(pentrail ai update *)",
+      "Bash(pentrail ai remove *)",
+      "Bash(pentrail pete install *)",
+      "Bash(pentrail pete update *)",
+      "Bash(pentrail pete remove *)",
+      "Bash(pentrail capture *)",
+      "Bash(pentrail redact *)",
+      "Bash(pentrail setup *)",
+      "Bash(pentrail update *)",
+      "Bash(pentrail upgrade *)",
+      "Bash(pentrail uninstall *)",
+      "Bash(scope-ok *)",
+      "Bash(PENTRAIL_SCOPE_OK=*)",
+      "Edit(/0-scope/**)",
+      "Edit(/logbook.md)",
+      "Edit(/state.json)",
+      "Edit(/CLAUDE.md)",
+      "Edit(/.claude/**)",
+      "Read(/state.json)",
+      "Read(/loot/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pentrail ai hook pretooluse",
+            "timeout": 30,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pentrail ai hook sessionstart",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "pentrail ai statusline"
+  }
+}

@@ -435,9 +435,12 @@ class TestCapture(unittest.TestCase):
         sb = Sandbox()
         self.addCleanup(sb.close)
         env = dict(sb.env, SHELL=shell)
-        if zshenv:
-            (sb.home / ".zshenv").write_text(zshenv)
-        (sb.home / ".zshrc").write_text("PS1='%~%# '\n")
+        # Debian and Ubuntu run compinit from /etc/zsh/zshrc; on a machine with a completion
+        # directory it calls insecure (CI runners) it first asks y/n, and would take the
+        # first letter typed below as the answer. That is the machine's setup, not pentrail's.
+        (sb.home / ".zshenv").write_text("skip_global_compinit=1\n" + (zshenv or ""))
+        (sb.home / ".zshrc").write_text("PS1='pt-ready%# '\n")
+        (sb.home / ".bashrc").write_text("PS1='pt-ready\\$ '\n")
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(sb.project)
@@ -454,11 +457,19 @@ class TestCapture(unittest.TestCase):
         def ports():
             st = sb.state()
             return sorted(p["port"] for h in st["hosts"] for p in h["ports"])
+        def screen():
+            return b"".join(buf).decode("utf-8", "replace")[-1200:]
         try:
-            pump(3)
+            for _ in range(100):                    # type only once the shell shows its prompt
+                pump(0.2)
+                if b"pt-ready" in b"".join(buf):
+                    break
+            else:
+                self.fail("the shell never showed its prompt; the screen ends with:\n" + screen())
             os.write(fd, b"box1scan\r")             # no host on the line: the hook leaves it
             pump(4)
-            self.assertEqual(ports(), [445], "a command with no host on its line is read before exit")
+            self.assertEqual(ports(), [445], "a command with no host on its line is read before exit;"
+                                             " the screen ends with:\n" + screen())
             os.write(fd, b"nmap -sV 10.10.10.5\r")  # a host on the line: the hook reads it at once
             pump(2)
             self.assertEqual(ports(), [22, 80, 445])

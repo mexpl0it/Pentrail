@@ -51,6 +51,8 @@ text (`trusted_markers`, `cap_begin`). Markers in saved files are never trusted.
 file's command line is read only from nmap's own first line, and only if it runs nmap.
 Commands guessed from prompt lines (a recording without markers) are marked unverified.
 `runbook` comments out every step whose command line came from a file or was guessed.
+The report's HTML and figures escape every text they show, so a path or title a target
+chose cannot add markup or script to the report.
 Tests: `TestCapture` (a stand-in tool forges markers), `test_a_scan_file_cannot_name_its_own_command`.
 *Left to you:* what a tool reports (ports, versions, paths) is the target's to lie about.
 Read a raw recording with `pentrail show` or `less`, not `cat`: escape sequences in it can
@@ -81,7 +83,8 @@ PeTe reads; a shared project folder.
 stored as hashes and scrubbed before anything is saved or parsed. `mask_secrets` replaces
 stored credentials and password arguments with `[secret]` in every JSON output, the brief,
 `trace` and `runbook`. PeTe's settings deny reading `state.json` and `loot/`.
-`report --mask` hides secrets for sharing.
+`report --mask` hides secrets for sharing, in the figures too; a flag's value is never
+drawn.
 *Left to you:* credentials sit in plain text in `state.json` and `loot/`: use disk
 encryption. What PeTe reads (command output) goes to the model provider; keep data your
 contract forbids sharing away from it ([ai/TERMS.md](ai/TERMS.md)).

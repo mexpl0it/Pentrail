@@ -101,6 +101,13 @@ output and the evidence file; you write the summary, impact and fix. The report 
 the scope, findings by severity, your phase docs and an appendix (hosts, credentials,
 commands with who ran them, evidence, timeline). `--mask` hides secrets.
 
+It also draws figures from the record (SVG in `5-report/figures/`, inline in the HTML):
+the **attack path**, per host from reconnaissance to initial access, privilege escalation
+and the pivots to the next host; a **map of each web site** with the paths found, their
+status codes and the findings and leads on them; and the **findings by severity**. Keep
+`flag`, `host own` and `pivot <from> <to> --via "<how>"` current and the attack path
+draws itself.
+
 ## PeTe, the AI layer (optional)
 
 PeTe is an assistant for [Claude Code](https://code.claude.com) that does scoping, recon,

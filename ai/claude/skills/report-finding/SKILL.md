@@ -46,6 +46,12 @@ The tester writes the executive summary and conclusion; you can draft them from 
 findings for them to edit. The appendix (hosts, commands with who ran them, evidence,
 timeline) comes from the record; your commands show "pete" in the By column.
 
+The report's figures are drawn from the record too: the attack path (per host: findings
+by the phase they were found in, flags, `host own`, and `pivot <from> <to> --via "<how>"`
+between hosts), a map of each web site and the findings by severity. When the path looks
+incomplete, the record is: point out to the tester which flag, owned host or pivot is
+missing, and let them record it. Do not draw or edit figures yourself.
+
 ## Read more
 
 - https://owasp.org/www-community/OWASP_Risk_Rating_Methodology

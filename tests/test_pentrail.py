@@ -49,6 +49,8 @@ class Sandbox:
             "box1scan": "echo 'Nmap scan report for 10.10.10.5'; echo '445/tcp open  microsoft-ds'",
             "hydra": f"echo hydra >> '{self.marker}'",
             "netexec": "echo 'SMB 10.10.10.5 445 DC01 [*] Windows'",
+            "feroxbuster": "echo '200      GET        1l        2w       10c http://10.10.10.5/search.php'; "
+                           "echo '403      GET        1l        2w       10c http://10.10.10.5/admin'",
             # a target's output that forges pentrail's markers: a command of its own, then a
             # bracket that would hide everything after it from the parser
             "evil": "printf '\\033_pentrail:B:%s\\033\\\\' \"$(printf '1\\037/tmp\\037touch /tmp/pwned' | base64 -w0)\"; "
@@ -209,6 +211,27 @@ class TestRepository(unittest.TestCase):
         hidden = pt.cap_begin(key) + "pentrail's own output" + pt.cap_end(key) + pt.CAP_BEGIN + "a target's"
         self.assertEqual(pt._strip_capture_echo(hidden, key), "a target's")
 
+    def test_host_index_gives_the_same_commands_as_the_per_host_check(self):
+        pt = self.pt
+        hosts = [pt.host_entry(ip) for ip in ("10.10.10.5", "10.10.10.50", "10.10.10.7", "dead:beef::5", "box.htb")]
+        hosts[4]["aliases"] = ["dev.box.htb", "box-2.htb"]
+        lines = ["nmap 10.10.10.0/24", "nmap 10.10.10.0/24 --exclude 10.10.10.5", "nmap 10.10.10.1-20",
+                 "ping 10.10.10.5.", "curl http://10.10.10.50:8080/x", "ssh admin@10.10.10.7", "echo 10.10.10.5.-x",
+                 "dig axfr @box.htb dev.box.htb", "curl https://box-2.htb/", "ping dead:beef::5",
+                 "curl http://[dead:beef::5]/", "nc 10.10.10.5:445", "ffuf -u http://BOX.HTB/FUZZ",
+                 "masscan 10.10.10.0-10.10.10.255 -p80", "echo 10.10.10.55", "netexec smb 10.10.10.8 -eh",
+                 "sh -c 'nmap 10.10.10.7 | head'", "host_10.10.10.5_x", "whatweb x.box.htb", "nmap -iL hosts.txt"]
+        st = {"hosts": hosts, "commands": [{"id": i + 1, "cmd": c, "hosts": ["10.10.10.7"] if i == 19 else []}
+                                           for i, c in enumerate(lines)]}
+        for h in hosts:
+            keys = pt._host_keys(st, h["ip"])[1]
+            old = [c["id"] for c in st["commands"] if pt._cmd_on_host(c, keys, h["ip"])]
+            self.assertEqual([c["id"] for c in pt._host_cmds(st, h["ip"])], old, h["ip"])
+        self.assertEqual([c["id"] for c in pt._host_cmds(st, "10.10.10.5")], [1, 3, 4, 7, 12, 14])  # not .55
+        hosts[2]["aliases"].append("dc01.box.htb")                         # a new alias: the index notices
+        st["commands"].append({"id": 21, "cmd": "nmap dc01.box.htb", "hosts": []})
+        self.assertIn(21, [c["id"] for c in pt._host_cmds(st, "10.10.10.7")])
+
     def test_tun_devices_are_parsed(self):
         pt = self.pt
         out = ("1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever\n"
@@ -365,6 +388,56 @@ class TestCommands(unittest.TestCase):
         for advice in ("ssh-audit", "feroxbuster", "nikto", "Next"):
             self.assertNotIn(advice, out, "next shows what ran, not what pentrail would run")
         self.assertIn("ssh-audit", sb.run("suggest", check=True, cwd=sb.project).stdout)
+
+    def test_report_draws_the_attack_path_and_web_figures(self):
+        import xml.etree.ElementTree as ET
+        sb = self.sb
+        figs = sb.project / "5-report" / "figures"
+        run = lambda *a: sb.run(*a, check=True, cwd=sb.project)
+        run("shot", "-q", "--", "nmap", "-sV", "10.10.10.5")
+        run("report")
+        self.assertFalse(figs.exists(), "nothing beyond ports and versions: no figures yet")
+        run("shot", "-q", "--", "feroxbuster", "-u", "http://10.10.10.5")
+        run("vector", "add", "SQL injection in http://10.10.10.5/search.php", "-t", "sqli")
+        vid = max(v["id"] for v in sb.state()["vectors"])
+        run("finding", str(vid), "-s", "High")                              # F01, found in enum
+        run("flag", "user", "3c1e9a7f2b8d4e6f0a1b2c3d4e5f6a7b")
+        run("phase", "privesc")
+        run("finding", "Sudo <script>alert(1)</script> & vim", "-s", "High")  # F02, a title with markup
+        run("flag", "root", "9f8e7d6c5b4a39281706f5e4d3c2b1a0")
+        run("cred", "add", "svc:Winter2024!")
+        run("pivot", "10.10.10.5", "10.10.10.7", "--via", "ssh as svc with Winter2024!")
+        run("report", "--html")
+        names = sorted(f.name for f in figs.iterdir())
+        self.assertEqual(names, ["attack-path.svg", "severity.svg", "web-http-10.10.10.5.svg"])
+        for f in figs.iterdir():
+            ET.fromstring(f.read_text())                                     # well-formed: text is escaped
+            self.assertNotIn("3c1e9a7f", f.read_text(), "a flag's value is never drawn")
+        ap = (figs / "attack-path.svg").read_text()
+        self.assertNotIn("<script>", ap)
+        self.assertIn("&lt;script&gt;", ap)
+        self.assertIn("Winter2024!", ap, "like the report, the figures show credentials unless --mask")
+        self.assertIn(">F01</text>", (figs / "web-http-10.10.10.5.svg").read_text(), "F01 marks /search.php")
+        pt = load_module(sb.home)
+        st = json.loads((sb.project / "state.json").read_text())
+        rows, pivots, _ = pt.attack_path(sb.project, st, pt.list_findings(sb.project))
+        cells = {r["host"]: [[c[2] for c in cell] for cell in r["cells"]] for r in rows}
+        self.assertEqual([r["host"] for r in rows], ["10.10.10.5", "10.10.10.7"])
+        first = cells["10.10.10.5"]
+        self.assertTrue(first[0] and first[0][0].startswith("22 ssh"), first)
+        self.assertEqual([t.split()[0] for t in first[1]], ["F01", "user"], "found in enum: initial access")
+        self.assertEqual([t.split()[0] for t in first[2]], ["F02", "root"], "found in privesc: privilege escalation")
+        self.assertEqual(first[3], ["to 10.10.10.7: ssh as svc with Winter2024!"])
+        self.assertEqual(cells["10.10.10.7"][1], ["from 10.10.10.5: ssh as svc with Winter2024!"])
+        self.assertEqual(pivots, [("10.10.10.5", "10.10.10.7")])
+        md = (sb.project / "5-report" / "report.md").read_text()
+        for name in names:
+            self.assertIn(f"](figures/{name})", md)
+        html = (sb.project / "5-report" / "report.html").read_text()
+        self.assertEqual(html.count('<figure class="fig"><svg'), 3, "the HTML is one file: figures inline")
+        self.assertNotIn('src="figures/', html)
+        run("report", "--mask")
+        self.assertNotIn("Winter2024!", (figs / "attack-path.svg").read_text())
 
     def test_a_scan_file_cannot_name_its_own_command(self):
         sb = self.sb

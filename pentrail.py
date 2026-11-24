@@ -3046,9 +3046,19 @@ def clean_why(text):
     secrets scrubbed. '' when none was given."""
     return redact_text(" ".join(str(text or "").split()))[0][:200]
 
+_CMD_INDEX = [None, 0, {}]                  # the commands list, its length, {id: command}
+
+def cmd_by_id(st, cid):
+    """A recorded command by its id. The index is rebuilt when the list is another one or
+    has grown, and holds on to the list, so a list made later can never pass for it."""
+    cs = st.get("commands", [])
+    if _CMD_INDEX[0] is not cs or _CMD_INDEX[1] != len(cs):
+        _CMD_INDEX[:] = [cs, len(cs), {c["id"]: c for c in cs}]
+    return _CMD_INDEX[2].get(cid) if cid is not None else None
+
 def src_str(st, cid, width=70):
     """'Found by' text: the command, when, and who ran it if it was not you."""
-    c = next((c for c in st.get("commands", []) if c["id"] == cid), None) if cid else None
+    c = cmd_by_id(st, cid) if cid else None
     if not c:
         return ""
     cmd = c["cmd"] if len(c["cmd"]) <= width else c["cmd"][:width - 1] + "…"
@@ -3202,7 +3212,7 @@ def auto_shot(d, st, seg, out, phase, cid):
             shot = txt.with_suffix(".png")
         except OSError:
             pass
-    c = next((c for c in st["commands"] if c["id"] == cid), None) if cid else None
+    c = cmd_by_id(st, cid) if cid else None
     if c is not None:
         c["shot"] = rel(d, shot)
     log_event("shot", f"found: {seg['cmd']} -> {rel(d, shot)}", d, seg.get("via"))
@@ -4152,7 +4162,7 @@ def _write_if_changed(f, old, new):
         os.replace(tmp, f)
 
 def _src_md(st, cid):
-    c = next((c for c in st["commands"] if c["id"] == cid), None) if cid else None
+    c = cmd_by_id(st, cid) if cid else None
     if not c:
         return ""
     cmd = c["cmd"] if len(c["cmd"]) <= 90 else c["cmd"][:89] + "…"
@@ -4202,8 +4212,9 @@ def render_overview(st):
         return "_no hosts yet: run a scan inside 'pentrail capture'_"
     rows = ["| Host | Name | OS | Open ports | Web | Leads | Owned |", "|---|---|---|---|---|---|---|"]
     for h in st["hosts"]:
-        web = sum(1 for w in st["web"] if w["host"] in _keys(h))
-        leads = sum(1 for v in st["vectors"] if v.get("host") in _keys(h) and v["status"] in ("open", "working"))
+        keys = _keys(h)
+        web = sum(1 for w in st["web"] if w["host"] in keys)
+        leads = sum(1 for v in st["vectors"] if v.get("host") in keys and v["status"] in ("open", "working"))
         rows.append(f"| {h['ip']} | {_cell(h.get('name'))} | {_cell(h.get('os'))} | {_cell(_ports_short(h, 8))} "
                     f"| {web} | {leads} | {'yes' if h['owned'] else ''} |")
     return "\n".join(rows)
@@ -4316,6 +4327,7 @@ def _note_links(d, st, enum_text=None):
         for k in [h["ip"], *h.get("aliases", []), *([h["name"]] if _linkable_name(h.get("name")) else [])]:
             keys.setdefault(k.lower(), h["ip"])
     return {"keys": keys, "anchors": anchors, "hosts": {h["ip"]: h for h in st["hosts"]},
+            "cmds": {c["id"]: c for c in st["commands"]},
             "findings": {x["id"].upper(): rel(d, x["path"]) for x in list_findings(d)},
             "vectors": {v["id"]: v.get("host", "") for v in st["vectors"]},
             "notes": {n["id"]: n.get("host", "") for n in st["notes"]}}
@@ -4325,14 +4337,20 @@ def _notes_anchor(L, host):
     return gh_slug(_host_title(h)) if h else "not-tied-to-a-host"
 
 def _mention_re(L):
-    keys = sorted(L["keys"], key=len, reverse=True)
-    hosts = "|".join(re.escape(k) for k in keys) or r"(?!x)x"
-    return re.compile(r"(?P<f>\bF\d{2,}\b)|(?<![\w#&])#(?P<v>\d+)\b|\bN(?P<n>\d+)\b"
-                      r"|(?<![\w.\-/])(?i:(?P<h>" + hosts + r"))(?![\w\-]|\.\w)")
+    """One pattern for everything a note can mention; built once per _note_links()."""
+    if "_re" not in L:
+        keys = sorted(L["keys"], key=len, reverse=True)
+        hosts = "|".join(re.escape(k) for k in keys) or r"(?!x)x"
+        L["_re"] = re.compile(r"(?P<f>\bF\d{2,}\b)|(?<![\w#&])#(?P<v>\d+)\b|\bN(?P<n>\d+)\b"
+                              r"|(?<![\w.\-/])(?i:(?P<h>" + hosts + r"))(?![\w\-]|\.\w)")
+    return L["_re"]
 
 def _mentions(n, L):
-    """The hosts a note's text names."""
-    return {L["keys"][m.group("h").lower()] for m in _mention_re(L).finditer(n["text"]) if m.group("h")}
+    """The hosts a note's text names (read once per note)."""
+    seen = L.setdefault("_mentions", {})
+    if n["id"] not in seen:
+        seen[n["id"]] = {L["keys"][m.group("h").lower()] for m in _mention_re(L).finditer(n["text"]) if m.group("h")}
+    return seen[n["id"]]
 
 def link_note(text, L, base=""):
     """Note text with hosts, leads, findings and notes as Markdown links, relative
@@ -4360,7 +4378,7 @@ def link_note(text, L, base=""):
     return "`".join(parts)
 
 def note_line(st, n, L, base=""):
-    c = next((c for c in st["commands"] if c["id"] == n.get("by")), None) if n.get("by") else None
+    c = L["cmds"].get(n.get("by")) if n.get("by") else None
     after = f" <sub>after `{c['cmd'][:80].replace('`', chr(39))}`</sub>" if c else ""
     return f"- **N{n['id']}** {n['ts'][:16]} · {n.get('phase', '')} · {link_note(n['text'], L, base)}{after}"
 
@@ -4558,7 +4576,7 @@ def create_finding(d, st, title, vec=None, sev=None):
     if vec and vec.get("sev"):
         dsev = vec["sev"].capitalize() if vec["sev"].capitalize() in SEVERITIES else dsev
     sev = (sev or dsev).capitalize()
-    c = next((c for c in st["commands"] if c["id"] == (vec or {}).get("by")), None) if vec else None
+    c = cmd_by_id(st, (vec or {}).get("by")) if vec else None
     steps, evidence = [], []
     if c:
         steps.append(f"1. Run:\n\n   ```\n   {c['cmd']}\n   ```\n\n   <!-- recorded {c['ts']} in {c.get('file')} -->")
@@ -4668,6 +4686,7 @@ def build_report(d, st, mask=False):
     ensure_docs(d)
     f = phase_dir(d, "report") / DOC_FILES["report"]
     fs = list_findings(d)
+    figs = write_figures(d, st, fs, _secrets(st) if mask else ())
     scope = Scope(d, st)
     meta = ["| | |", "|---|---|",
             f"| Project | {_cell(d.name)} |",
@@ -4699,7 +4718,8 @@ def build_report(d, st, mask=False):
     else:
         sc.append("_No scope recorded (0-scope/scope.md)._")
     counts = {s: sum(1 for x in fs if x["sev"] == s) for s in SEVERITIES}
-    summ = ["| Severity | Count |", "|---|---|"] + [f"| {s} | {counts[s]} |" for s in SEVERITIES]
+    summ = ([f"![Findings by severity]({figs['severity']})", ""] if figs.get("severity") else []) \
+        + ["| Severity | Count |", "|---|---|"] + [f"| {s} | {counts[s]} |" for s in SEVERITIES]
     if fs:
         summ += ["", "| ID | Title | Severity | Asset | Status |", "|---|---|---|---|---|"]
         summ += [f"| {x['id']} | {_cell(x['title'])} | {x['sev']} | {_cell(x['asset'])} | {_cell(x['status'])} |"
@@ -4711,11 +4731,16 @@ def build_report(d, st, mask=False):
     for p in ("enum", "foothold", "privesc", "lateral"):
         body = _phase_story(d, p)
         if p == "enum" and st["hosts"]:
-            body = "#### Hosts and services\n" + render_overview(st) + ("\n\n" + body if body else "")
+            web = "".join(f"\n\n![Web content of {o}]({path})" for o, path in figs["web"])
+            body = "#### Hosts and services\n" + render_overview(st) \
+                + ("\n\n#### Web content" + web if web else "") + ("\n\n" + body if body else "")
         if p == "lateral" and "`pivot" in _read(d / "logbook.md"):
             body = (body + "\n\n" if body else "") + "#### Host chain\n" + render_chain(d)
         if body.strip():
             story.append(f"### {PHASE_TITLES.get(p, 'Enumeration')}\n\n{body.strip()}")
+    if figs.get("attack-path"):
+        story.insert(0, "### Attack path\n\n![Attack path: per host what was found (findings coloured by "
+                        f"severity), the access gained and the pivots between hosts]({figs['attack-path']})")
     app = ["### Hosts and services"]
     for h in st["hosts"]:
         app += ["", f"**{h['ip']}**" + (f" ({h['name']})" if h.get("name") else "")
@@ -4772,6 +4797,434 @@ def cmd_report(args):
                 warn("No PDF converter found (chromium, google-chrome, wkhtmltopdf or pandoc). "
                      f"Open {rel(d, html)} in a browser and print it to PDF.")
 
+# --- figures: SVG drawn from the record, for the report -------------------------------
+# The attack path (per host: what was found, the access gained, the pivots between hosts),
+# the web content per site and the findings by severity. pentrail draws them itself
+# (standard library only) into 5-report/figures/ on every 'pentrail report'; report.md
+# links them and report.html carries them inline. Paths and titles can come from a
+# target, so every text is escaped.
+FIG_DIR = "figures"
+FIG_NAMES = re.compile(r"^(?:attack-path|severity|web-[a-z0-9.-]+)\.svg$")
+FIG_FONT = "'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+FIG_MONO = "'DejaVu Sans Mono', Consolas, monospace"
+FIG_INK, FIG_MUTED, FIG_LINE, FIG_SOFT, FIG_ACCENT = "#1d2330", "#5b6475", "#d9dee7", "#f4f6fa", "#1f4e8c"
+SEV_COLOUR = {"Critical": "#7b1fa2", "High": "#c62828", "Medium": "#ef6c00", "Low": "#2e7d32", "Info": "#546e7a"}
+STAGES = ("Reconnaissance", "Initial access", "Privilege escalation", "Lateral movement")
+_FIG_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_ESC_SEQ = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+def _fx(s):
+    """Text for an SVG: terminal codes and control characters out, markup escaped."""
+    import html as _h
+    return _h.escape(_FIG_CTRL.sub("", _ESC_SEQ.sub("", str(s))), quote=True)
+
+def _tw(s, size, mono=False):
+    """About how wide s is in px, to fit it in a box without font metrics."""
+    if mono:
+        return len(s) * 0.6 * size
+    narrow, wide = set("ilIjtfr.,:;|!'()[]{}/ 1"), set("mwMW@%")
+    return size * sum(0.3 if c in narrow else 0.86 if c in wide else 0.64 if c.isupper() else 0.55 for c in s)
+
+def _fit(s, size, width, mono=False):
+    """s cut to fit width, ending in an ellipsis when it was cut."""
+    if _tw(s, size, mono) <= width:
+        return s
+    while s and _tw(s + "…", size, mono) > width:
+        s = s[:-1]
+    return s.rstrip() + "…"
+
+def _wrap(s, size, width, lines=2):
+    """s over at most 'lines' lines of width px; the last line takes the rest, cut to fit."""
+    words, out, cur = s.split(), [], ""
+    for i, w in enumerate(words):
+        t = f"{cur} {w}".strip()
+        if _tw(t, size) <= width or not cur:
+            cur = t
+            continue
+        out.append(cur)
+        cur = " ".join(words[i:]) if len(out) == lines - 1 else w
+        if len(out) == lines - 1:
+            break
+    out.append(cur)
+    return [_fit(l, size, width) for l in out]
+
+def _svg(w, h, body, title, defs=""):
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
+            f'role="img" aria-label="{_fx(title)}" font-family="{FIG_FONT}">\n'
+            f"<title>{_fx(title)}</title>\n" + (f"<defs>{defs}</defs>\n" if defs else "")
+            + f'<rect width="{w}" height="{h}" rx="8" fill="#ffffff" stroke="{FIG_LINE}"/>\n'
+            + "\n".join(body) + "\n</svg>\n")
+
+def _arrow_marker(mid, colour):
+    return (f'<marker id="{mid}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
+            f'orient="auto-start-reverse"><path d="M0,1 L9,5 L0,9 z" fill="{colour}"/></marker>')
+
+def fig_severity(fs):
+    """Findings by severity, as bars."""
+    if not fs:
+        return None
+    counts = [(s, sum(1 for x in fs if x["sev"] == s)) for s in SEVERITIES]
+    top = max(c for _, c in counts) or 1
+    lab, bar, row = 96, 380, 28
+    W, H = lab + bar + 70, 18 + row * len(counts) + 10
+    body = []
+    for i, (s, c) in enumerate(counts):
+        y = 16 + i * row
+        body.append(f'<text x="18" y="{y + 15}" font-size="12" fill="{FIG_INK}">{s}</text>')
+        body.append(f'<rect x="{lab}" y="{y + 3}" width="{bar}" height="16" rx="3" fill="{FIG_SOFT}"/>')
+        if c:
+            body.append(f'<rect x="{lab}" y="{y + 3}" width="{max(6, round(bar * c / top))}" height="16" '
+                        f'rx="3" fill="{SEV_COLOUR[s]}"/>')
+        body.append(f'<text x="{lab + bar + 12}" y="{y + 15}" font-size="12" font-weight="600" '
+                    f'fill="{FIG_INK if c else FIG_MUTED}">{c}</text>')
+    return _svg(W, H, body, "Findings by severity: " + ", ".join(f"{c} {s}" for s, c in counts if c))
+
+def _log_events(d):
+    """The logbook as (time, kind, text), oldest first."""
+    out = []
+    for l in _read(d / "logbook.md").splitlines():
+        m = re.match(r"^- (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)  `(\w+) *` ?(.*)$", l)
+        if m:
+            out.append(m.groups())
+    return out
+
+def _asset_host(st, asset):
+    """The tracked host a finding's asset names (an IP, a name, host:port, a URL); else
+    the host part of it."""
+    a = (asset or "").strip().strip("`")
+    host = (urlsplit(a).hostname or "") if "://" in a else re.split(r"[:/\s]", a)[0]
+    h = _find_host(st, host)
+    return h["ip"] if h else host
+
+def attack_path(d, st, fs, clean=str):
+    """What the record shows per host at each stage, for the attack path figure:
+    (rows, pivots, more). A row is {host, name, owned, cells: [[(moment, kind, text,
+    colour)] per stage]}; only hosts with more than reconnaissance get one, in the order
+    the attack reached them; pivots are (from, to). A moment is (time, logbook line), so
+    the order is exact even within one second."""
+    cmds = {c["id"]: c for c in st["commands"]}
+    events = _log_events(d)
+    rows, pivots, access = {}, [], {}                   # access: host -> moment first entered
+    NEVER = ("~", 0)
+    def row(addr):
+        h = _find_host(st, addr)
+        key = h["ip"] if h else addr
+        if key not in rows:
+            rows[key] = {"host": key, "name": (h or {}).get("name", ""), "owned": bool(h and h["owned"]),
+                         "cells": [[] for _ in STAGES], "t": NEVER}
+        return rows[key]
+    def add(r, stage, m, kind, text, colour):
+        r["cells"][stage].append((m, kind, clean(text), colour))
+        r["t"] = min(r["t"], m)
+    def entered(r, m):
+        access[r["host"]] = min(access.get(r["host"], NEVER), m)
+    def phase_at(i):
+        p = "enum"                                      # a project starts in enum
+        for t, kind, text in events[:i]:
+            if kind == "phase" and text.strip():
+                p = text.split()[0]
+        return p
+    for i, (t, kind, text) in enumerate(events):
+        m = (t, i)
+        if kind == "flag":                              # "<name> on <host>: <value>"; never the value
+            f = re.match(r"^(\S+) on (\S+):", text)
+            if f and f.group(2) != "?":
+                r = row(f.group(2))
+                top = f.group(1).lower() in ("root", "system", "admin", "administrator")
+                add(r, 2 if top else 1, m, "access", f"{f.group(1)} flag", FIG_ACCENT)
+                entered(r, m)
+        elif kind == "own":
+            f = re.search(r"compromised (\S+)", text)
+            if f:
+                r = row(f.group(1))
+                if not any(k == "access" for cell in r["cells"] for _, k, _, _ in cell):
+                    add(r, 1, m, "access", "compromised", FIG_ACCENT)
+                entered(r, m)
+        elif kind == "pivot":
+            f = re.match(r"^(\S+) -> (\S+)(?: \((.*)\))?", text)
+            if f:
+                a, b = row(f.group(1)), row(f.group(2))
+                via = f": {f.group(3)}" if f.group(3) else ""
+                add(a, 3, m, "pivot", f"to {b['host']}{via}", FIG_ACCENT)
+                add(b, 1, m, "pivot", f"from {a['host']}{via}", FIG_ACCENT)
+                entered(b, m)
+                pivots.append((a["host"], b["host"]))
+    def found(x, vec, c):
+        """When a finding was found, and in which phase: the command that found it, else
+        the logbook line of its lead or of the finding itself."""
+        if c:
+            return (c["ts"], -1), c.get("phase") or ""
+        for i, (t, kind, text) in enumerate(events):
+            if (vec and kind == "vector" and text.startswith(f"#{vec['id']} ")) or \
+                    (kind == "finding" and text.split()[:1] == [x["id"]]):
+                return (t, i), phase_at(i)
+        return None, ""
+    for x in fs:
+        host = _asset_host(st, x["asset"])
+        if not host:
+            continue
+        r = row(host)
+        vec = next((v for v in st["vectors"] if v.get("finding") == x["id"]), None)
+        m, phase = found(x, vec, cmds.get(vec.get("by")) if vec else None)
+        # the tester's phase says it. In lateral, a finding on a host they pivoted from is
+        # how they moved on; on any other host, one after it was entered is how they got
+        # further on it.
+        stage = 2 if phase == "privesc" else 1 if phase in ("enum", "foothold") or not m \
+            else 3 if phase == "lateral" and any(src == r["host"] for src, _ in pivots) \
+            else 2 if m > access.get(r["host"], NEVER) else 1
+        add(r, stage, m or NEVER, "finding", f"{x['id']} {x['title']}", SEV_COLOUR.get(x["sev"], FIG_MUTED))
+    for r in rows.values():
+        h = _find_host(st, r["host"])
+        if h and h["ports"]:
+            ports = sorted(h["ports"], key=lambda p: p["port"])
+            text = " · ".join(f"{p['port']} {p['service'] or '?'}" for p in ports[:5]) \
+                + (f" · +{len(ports) - 5}" if len(ports) > 5 else "")
+            first = min((cmds[p["by"]]["ts"] for p in ports if p.get("by") in cmds), default="")
+            r["cells"][0].append(((first, -1), "recon", text, FIG_MUTED))
+        for cell in r["cells"]:
+            cell.sort(key=lambda c: c[0])
+    order = sorted(rows.values(), key=lambda r: (r["t"], r["host"]))
+    return order[:8], pivots, max(0, len(order) - 8)
+
+def fig_attack_path(rows, pivots, more=0):
+    """The attack path: a row per host, a column per stage, arrows from stage to stage and
+    from host to host where you pivoted."""
+    if not rows:
+        return None
+    M, CW, GAP, HEAD, PAD, FS, LH = 18, 172, 30, 40, 8, 11.5, 14
+    W = 2 * M + len(STAGES) * CW + (len(STAGES) - 1) * GAP
+    tx = lambda i: M + i * (CW + GAP)
+    inner = CW - 2 * PAD - 26                         # text estimates run short on URLs
+    body, curves, y = [], [], HEAD
+    for i, s in enumerate(STAGES):
+        body.append(f'<text x="{tx(i) + CW / 2}" y="26" text-anchor="middle" font-size="11" font-weight="600" '
+                    f'letter-spacing="0.4" fill="{FIG_MUTED}">{_fx(s.upper())}</text>')
+    body.append(f'<line x1="{M}" y1="{HEAD - 6}" x2="{W - M}" y2="{HEAD - 6}" stroke="{FIG_LINE}"/>')
+    boxes = {}
+    for r in rows:
+        cells = []
+        for chips in r["cells"]:
+            items = [(kind, _wrap(text, FS, inner, 3 if kind == "finding" else 2), col)
+                     for _, kind, text, col in chips[:6]]
+            extra = len(chips) - len(items)
+            h = sum(len(ls) * LH + 9 for _, ls, _ in items) + 6 * max(0, len(items) - 1) + (16 if extra else 0)
+            cells.append((items, h, extra))
+        ch = max(h for _, h, _ in cells) + 2 * PAD
+        top = y + 26
+        title = f'<tspan font-weight="700" fill="{FIG_INK}">{_fx(r["host"])}</tspan>'
+        if r["name"] and r["name"] != r["host"]:
+            title += f'<tspan fill="{FIG_MUTED}">  {_fx(r["name"])}</tspan>'
+        if r["owned"]:
+            title += f'<tspan fill="{FIG_ACCENT}" font-weight="600">  · compromised</tspan>'
+        body.append(f'<text x="{M}" y="{y + 16}" font-size="13">{title}</text>')
+        filled = [i for i, (items, _, _) in enumerate(cells) if items]
+        for a, b in zip(filled, filled[1:]):
+            yy = top + PAD + 12
+            body.append(f'<line x1="{tx(a) + CW + 3}" y1="{yy}" x2="{tx(b) - 4}" y2="{yy}" stroke="{FIG_MUTED}" '
+                        f'stroke-width="1.4" marker-end="url(#ap-step)"/>')
+        for i, (items, h, extra) in enumerate(cells):
+            if not items:
+                continue
+            x = tx(i)
+            body.append(f'<rect x="{x}" y="{top}" width="{CW}" height="{h + 2 * PAD}" rx="6" fill="{FIG_SOFT}" '
+                        f'stroke="{FIG_LINE}"/>')
+            cy = top + PAD
+            for kind, lines, col in items:
+                hh = len(lines) * LH + 9
+                body.append(f'<rect x="{x + PAD}" y="{cy}" width="{CW - 2 * PAD}" height="{hh}" rx="4" '
+                            f'fill="#ffffff" stroke="{FIG_LINE}"/>')
+                body.append(f'<rect x="{x + PAD}" y="{cy}" width="4" height="{hh}" rx="2" fill="{col}"/>')
+                ink = FIG_MUTED if kind == "recon" else FIG_INK
+                weight = ' font-weight="600"' if kind in ("access", "pivot") else ""
+                for k, line in enumerate(lines):
+                    body.append(f'<text x="{x + PAD + 11}" y="{cy + 15 + k * LH}" font-size="{FS}" '
+                                f'fill="{ink}"{weight}>{_fx(line)}</text>')
+                cy += hh + 6
+            if extra:
+                body.append(f'<text x="{x + PAD + 2}" y="{cy + 9}" font-size="10.5" fill="{FIG_MUTED}">'
+                            f'+{extra} more</text>')
+        boxes[r["host"]] = (top, ch, [h + 2 * PAD if items else 0 for items, h, _ in cells])
+        y = top + ch + 30
+    for a, b in pivots:                                 # behind the cells, through the gaps
+        if a in boxes and b in boxes and a != b:
+            ta, _, fa = boxes[a]
+            tb, _, fb = boxes[b]
+            src = 3 if fa[3] else max(i for i, f in enumerate(fa) if f)
+            x1, x2 = tx(src) + CW / 2, tx(1) + CW / 2
+            y1, y2 = ta + fa[src], tb - 2
+            if tb < ta:                                 # back up to a host drawn earlier
+                y1, y2 = ta, tb + (fb[1] or max(fb)) + 2
+            bend = 24 if y2 > y1 else -24
+            curves.append(f'<path d="M{x1},{y1} C{x1},{y1 + bend} {x2},{y2 - bend} {x2},{y2}" fill="none" '
+                          f'stroke="{FIG_ACCENT}" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ap-pivot)"/>')
+    H = y - 30 + (26 if more else 0) + M
+    if more:
+        body.append(f'<text x="{M}" y="{H - M}" font-size="11" fill="{FIG_MUTED}">+{more} more host(s): '
+                    f'see the findings and the appendix</text>')
+    defs = _arrow_marker("ap-step", FIG_MUTED) + _arrow_marker("ap-pivot", FIG_ACCENT)
+    return _svg(W, H, curves + body, "Attack path: " + " -> ".join(r["host"] for r in rows), defs)
+
+_STATUS_COLOUR = ((200, 300, "#2e7d32"), (300, 400, FIG_ACCENT), (400, 500, "#b26a00"), (500, 600, "#c62828"))
+
+def web_sites(st, fs):
+    """The web paths pentrail recorded, per site: {origin: {path: (status, [(badge, colour)])}};
+    a badge is a finding (F01, coloured by severity) or a lead (#5) about that path."""
+    sites = {}
+    for w in st["web"]:
+        u = w["url"]
+        if "://" in u:
+            p = urlsplit(u)
+            origin, path = f"{p.scheme}://{p.netloc}".lower(), p.path or "/"
+        else:
+            origin, path = f"http://{w['host']}".lower(), u if u.startswith("/") else "/" + u
+        cur = sites.setdefault(origin, {}).get(path)
+        sites[origin][path] = (w.get("status") or (cur or (None,))[0], [])
+    def mark(url, badge, colour):
+        p = urlsplit(url)
+        origin = f"{p.scheme}://{p.netloc}".lower()
+        if origin in sites:
+            path = p.path or "/"
+            status, badges = sites[origin].get(path, (None, []))
+            sites[origin][path] = (status, badges + [(badge, colour)])
+    for x in fs:                                        # the URLs in its asset, title or lead
+        vec = next((v for v in st["vectors"] if v.get("finding") == x["id"]), {})
+        text = " ".join((x["asset"] or "", x["title"], vec.get("desc", "")))
+        for url in sorted(set(u.rstrip(".,") for u in re.findall(r"https?://[^\s|`)<>]+", text))):
+            mark(url, x["id"], SEV_COLOUR.get(x["sev"], FIG_MUTED))
+    for v in st["vectors"]:
+        if v["status"] != "dead" and not v.get("finding"):
+            for url in re.findall(r"https?://[^\s)<>]+", v["desc"]):
+                mark(url.rstrip(".,"), f"#{v['id']}", FIG_MUTED)
+    return sites
+
+def fig_web_map(origin, paths, clean=str):
+    """One site as a tree of the paths found, with status codes and the findings and leads
+    on them. Long lists keep what has a badge or a status worth reading, shallow first."""
+    MAX = 24
+    static = re.compile(r"\.(?:css|js|map|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot)$", re.I)
+    tree = {}
+    for path, (status, badges) in paths.items():
+        parts = [p for p in path.split("/") if p]
+        node = tree
+        for i, part in enumerate(parts):
+            node = node.setdefault(part, {"_": None, "_b": [], "_k": {}})
+            if i == len(parts) - 1:
+                node["_"], node["_b"] = status, badges
+            node = node["_k"]
+        if not parts:
+            tree.setdefault("", {"_": status, "_b": badges, "_k": {}})
+    rows = []                                           # (depth, name, status, badges, is_dir, path)
+    def walk(nodes, depth, prefix):
+        for name in sorted(k for k in nodes if k):
+            n = nodes[name]
+            rows.append([depth, name + ("/" if n["_k"] else ""), n["_"], n["_b"], prefix + "/" + name])
+            walk(n["_k"], depth + 1, prefix + "/" + name)
+    root = tree.get("", {"_": None, "_b": []})
+    walk(tree, 1, "")
+    def rank(r):                                        # badges first, static files last
+        st_ = r[2] or 0
+        cls = 0 if r[3] else 4 if static.search(r[4]) else \
+            1 if 200 <= st_ < 300 or st_ in (401, 403) else 2 if 300 <= st_ < 400 else 3
+        return (cls, r[0], r[4])
+    keep = set(map(lambda r: r[4], sorted(rows, key=rank)[:MAX]))
+    for r in list(rows):                                # a kept path keeps its parents
+        if r[4] in keep:
+            parts = r[4].split("/")
+            keep.update("/".join(parts[:i]) for i in range(2, len(parts)))
+    shown = [r for r in rows if r[4] in keep]
+    hidden = len(rows) - len(shown)
+    RH, M, W = 22, 18, 720
+    sx = W - M - 190                                    # status column; badges after it
+    H = 58 + RH * (len(shown) + 1) + (RH if hidden else 0) + M
+    body = [f'<text x="{M}" y="28" font-size="14" font-weight="700" fill="{FIG_INK}">{_fx(clean(origin))}</text>',
+            f'<text x="{W - M}" y="28" text-anchor="end" font-size="11" fill="{FIG_MUTED}">'
+            f'{len(rows)} path(s) recorded' + (f", {len(shown)} shown" if hidden else "") + '</text>',
+            f'<line x1="{M}" y1="40" x2="{W - M}" y2="40" stroke="{FIG_LINE}"/>']
+    def pill(x, y, status):
+        col = next((c for lo, hi, c in _STATUS_COLOUR if status and lo <= status < hi), FIG_MUTED)
+        return (f'<rect x="{x}" y="{y - 12}" width="38" height="17" rx="8.5" fill="#ffffff" stroke="{col}"/>'
+                f'<text x="{x + 19}" y="{y}" text-anchor="middle" font-size="10.5" font-weight="600" fill="{col}">'
+                f'{status or "?"}</text>')
+    def badges(x, y, bs):
+        out = []
+        for text, col in bs[:4]:
+            w = _tw(text, 10.5) + 14
+            filled = text.startswith("F")
+            out.append(f'<rect x="{x}" y="{y - 12}" width="{w}" height="17" rx="3" fill="{col if filled else "#ffffff"}" '
+                       f'stroke="{col}"/><text x="{x + w / 2}" y="{y}" text-anchor="middle" font-size="10.5" '
+                       f'font-weight="600" fill="{"#ffffff" if filled else col}">{_fx(text)}</text>')
+            x += w + 5
+        return "".join(out)
+    y0 = 62
+    body.append(f'<text x="{M}" y="{y0}" font-size="12" font-family="{FIG_MONO}" fill="{FIG_INK}">/</text>')
+    if root.get("_") or root.get("_b"):
+        body.append(pill(sx, y0, root.get("_")) + badges(sx + 46, y0, root.get("_b", [])))
+    last_at = {}                                        # depth -> y of the last row drawn at it
+    for i, (depth, name, status, bs, path) in enumerate(shown):
+        y = y0 + RH * (i + 1)
+        x = M + 6 + (depth - 1) * 18
+        parent_y = last_at.get(depth - 1, y0)
+        body.append(f'<path d="M{x},{parent_y + 5} V{y - 4} H{x + 10}" fill="none" stroke="{FIG_LINE}" stroke-width="1.2"/>')
+        last_at[depth] = y
+        for k in [k for k in last_at if k > depth]:
+            del last_at[k]
+        label = _fit(clean(name), 12, sx - (x + 14) - 12, mono=True)
+        ink = FIG_INK if (status and status < 400) or bs else FIG_MUTED
+        body.append(f'<text x="{x + 14}" y="{y}" font-size="12" font-family="{FIG_MONO}" fill="{ink}">{_fx(label)}</text>')
+        if status or bs:
+            body.append(pill(sx, y, status) + badges(sx + 46, y, bs))
+    if hidden:
+        body.append(f'<text x="{M + 6}" y="{y0 + RH * (len(shown) + 1)}" font-size="11" fill="{FIG_MUTED}">'
+                    f'+{hidden} more path(s), static files first: 1-enum/enum.md lists them all</text>')
+    return _svg(W, H, body, f"Web content of {clean(origin)}: {len(rows)} path(s)")
+
+def write_figures(d, st, fs, secrets=()):
+    """Draw the report's figures into 5-report/figures/: {'severity': path, 'attack-path':
+    path, 'web': [(origin, path)]}, paths relative to the report. Figures pentrail made
+    before are replaced; other files there are left alone."""
+    out = phase_dir(d, "report") / FIG_DIR
+    def clean(s):
+        s = redact_text(str(s))[0]
+        for x in secrets:
+            if len(x) >= 4:
+                s = s.replace(x, "[hidden]")
+        return s
+    figs = {"web": []}
+    drawn = {}
+    sev = fig_severity(fs)
+    if sev:
+        drawn["severity.svg"] = sev
+    rows, pivots, more = attack_path(d, st, fs, clean)
+    ap = fig_attack_path(rows, pivots, more)
+    if ap:
+        drawn["attack-path.svg"] = ap
+    sites = web_sites(st, fs)
+    for origin in sorted(sites, key=lambda o: (-len(sites[o]), o))[:6]:
+        name = "web-" + re.sub(r"[^a-z0-9.]+", "-", origin.replace("://", "-")).strip("-") + ".svg"
+        drawn[name] = fig_web_map(origin, sites[origin], clean)
+        figs["web"].append((origin, f"{FIG_DIR}/{name}"))
+    if out.is_dir():
+        for f in out.iterdir():
+            if FIG_NAMES.match(f.name) and f.name not in drawn:
+                f.unlink()
+    if drawn:
+        out.mkdir(parents=True, exist_ok=True)
+    for name, svg in drawn.items():
+        _write_if_changed(out / name, _read(out / name), svg)
+    figs.update({n[:-4]: f"{FIG_DIR}/{n}" for n in drawn if not n.startswith("web-")})
+    return figs
+
+_FIG_IMG = re.compile(r'<p><img alt="([^"]*)" src="(figures/[A-Za-z0-9._-]+\.svg)"></p>')
+
+def inline_figures(html, base):
+    """report.html carries pentrail's figures inline, so the one file is the whole report."""
+    def sub(m):
+        f = base / m.group(2)
+        if not FIG_NAMES.match(f.name) or not f.is_file():
+            return m.group(0)
+        return f'<figure class="fig">{f.read_text()}<figcaption>{m.group(1)}</figcaption></figure>'
+    return _FIG_IMG.sub(sub, html)
+
 # --- export: Markdown -> styled HTML (print it, or let a converter make the PDF) -------
 REPORT_CSS = """
 @page { size: A4; margin: 18mm 16mm; }
@@ -4798,6 +5251,9 @@ sub { color: var(--muted); }
 .sev-critical { background:#7b1fa2; } .sev-high { background:#c62828; } .sev-medium { background:#ef6c00; }
 .sev-low { background:#2e7d32; } .sev-info { background:#546e7a; }
 .cover { border-bottom: 1px solid var(--line); margin-bottom: 20px; padding-bottom: 12px; }
+figure.fig { margin: 14px 0 22px; page-break-inside: avoid; }
+figure.fig svg { display: block; max-width: 100%; height: auto; }
+figure.fig figcaption { color: var(--muted); font-size: 9pt; margin-top: 6px; }
 @media print { body { padding: 0; max-width: none; } h2 { page-break-before: auto; } a { color: inherit; } }
 """
 
@@ -4889,7 +5345,7 @@ def md_to_html(md):
 def export_html(d, md_file, st):
     """report.md -> report.html next to it, styled for screen and print."""
     import html as _h
-    body = md_to_html(_read(md_file))
+    body = inline_figures(md_to_html(_read(md_file)), md_file.parent)
     title = f"Penetration test report - {d.name}"
     page = (f"<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
@@ -5039,17 +5495,68 @@ def _cmd_on_host(c, keys, ip=None):
     cmd = c.get("cmd") or ""
     if "exclude" in cmd or " -eh" in cmd:              # rare: decide from the command line
         return _targets_host(hosts_in_command(cmd), keys, ip)
-    if keys & {x.lower() for x in c.get("hosts", [])}:
+    if any(x.lower() in keys for x in c.get("hosts", ())):
         return True
-    if any(_word_re(k).search(cmd) for k in keys):
+    low = cmd.lower()                                   # the word check only where the text is there
+    if any(k.lower() in low and _word_re(k).search(cmd) for k in keys):
         return True
     return bool(ip) and bool(_RANGE_HINT.search(cmd)) and _targets_host(hosts_in_command(cmd), keys, ip)
+
+_RUN = re.compile(r"[\w.-]+")
+_HOST_INDEX = [None, 0, None, None]         # the commands list, its length, the hosts' keys, the index
+
+def _run_keys(run):
+    """The host keys a run of [\\w.-] characters can hold for _word_re() at its start: the
+    whole run, or the run cut where a dot is not followed by a word character."""
+    yield run
+    for i, ch in enumerate(run):
+        if ch == "." and (i + 1 == len(run) or run[i + 1] in ".-"):
+            yield run[:i]
+
+def _host_cmd_index(st):
+    """{host ip: the commands that ran against it} for every tracked host, in one pass over
+    the commands; the same answer as _cmd_on_host() per host, without trying every host
+    against every command. Kept while the commands and hosts are the same."""
+    cs = st["commands"]
+    hosts = [(h["ip"], frozenset(k.lower() for k in (h["ip"], *h.get("aliases", [])))) for h in st["hosts"]]
+    if _HOST_INDEX[0] is cs and _HOST_INDEX[1] == len(cs) and _HOST_INDEX[2] == hosts:
+        return _HOST_INDEX[3]
+    owner, odd = {}, []                         # key -> hosts; keys a run cannot hold (IPv6)
+    for ip, keys in hosts:
+        for k in keys:
+            owner.setdefault(k, []).append(ip)
+            if not re.fullmatch(r"\w[\w.-]*", k) and k not in odd:
+                odd.append(k)
+    out = {ip: [] for ip, _ in hosts}
+    for c in cs:
+        cmd = c.get("cmd") or ""
+        if "exclude" in cmd or " -eh" in cmd:      # rare: decide from the command line
+            targets = hosts_in_command(cmd)
+            hit = {ip for ip, keys in hosts if _targets_host(targets, keys, ip)}
+        else:
+            hit = {ip for x in c.get("hosts", ()) for ip in owner.get(x.lower(), ())}
+            for m in _RUN.finditer(cmd):
+                for k in _run_keys(m.group(0).lower()):
+                    if k in owner and _word_re(k).search(cmd):
+                        hit.update(owner[k])
+            low = cmd.lower()
+            for k in odd:
+                if k in low and _word_re(k).search(cmd):
+                    hit.update(owner[k])
+            if len(hit) < len(out) and _RANGE_HINT.search(cmd):
+                targets = hosts_in_command(cmd)
+                hit.update(ip for ip, keys in hosts if ip not in hit and _targets_host(targets, keys, ip))
+        for ip in hit:
+            out[ip].append(c)
+    _HOST_INDEX[:] = [cs, len(cs), hosts, out]
+    return out
 
 def _host_cmds(st, host):
     """The recorded commands that ran against a host."""
     h, keys = _host_keys(st, host)
-    ip = h["ip"] if h else host
-    return [c for c in st["commands"] if _cmd_on_host(c, keys, ip)]
+    if not h:
+        return [c for c in st["commands"] if _cmd_on_host(c, keys, host)]
+    return list(_host_cmd_index(st).get(h["ip"], ()))
 
 def _step_hits(st, host, step, cmds=None):
     """The recorded commands that did a 'next' step on a host: the same tool (the
@@ -5874,7 +6381,7 @@ def cmd_show(args):
         cid = int(str(args.id).lstrip("#"))
     except ValueError:
         die("Usage: pentrail show <command id> [-n lines]   (ids: pentrail trace)")
-    c = next((c for c in st["commands"] if c["id"] == cid), None)
+    c = cmd_by_id(st, cid)
     if not c:
         die(f"No command #{cid} (see 'pentrail trace')")
     f, lines = show_lines(d, st, c)
@@ -8178,6 +8685,11 @@ DETAILS.update({
          " pentrail fills: project details, scope and rules, findings overview by severity,",
          " the findings themselves, a walkthrough from your phase docs, and an appendix with",
          " hosts and ports, names, credentials, commands, evidence and the timeline.",
+         "Figures, drawn from the record into 5-report/figures/ (SVG): the attack path (per",
+         " host what was found at each stage, the flags, 'host own' and 'pivot --via' between",
+         " hosts; a finding's stage is the phase it was found in), a map of every web site's",
+         " paths with status codes and the findings and leads on them, and the findings by",
+         " severity. report.md links them; report.html carries them inline.",
          "--mask hides secrets; --html writes a styled report.html (print it to PDF);",
          " --pdf also converts it with chromium, wkhtmltopdf or pandoc when installed."],
         "pentrail report --html   ;   pentrail report --mask --pdf"),

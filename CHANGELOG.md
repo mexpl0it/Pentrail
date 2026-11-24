@@ -63,6 +63,11 @@ Added
 - **`pentrail hostfile add [ip] <name...> | list | rm | clean [--all]`**: names for a box in
   `/etc/hosts`, one tagged line per name; it says whether the name is in scope, and changes
   a line of yours only after your yes. `resolve` uses the same code.
+- **Figures in the report**, drawn from the record (SVG in `5-report/figures/`, inline in
+  `report.html`): the attack path per host (reconnaissance, initial access, privilege
+  escalation, lateral movement, with the pivots between hosts), a map of each web site's
+  paths with status codes and the findings and leads on them, and the findings by
+  severity. Text from a target is escaped; `--mask` hides credentials in them too.
 - `new --vpn`: start the VPN without asking.
 - Tests (`tests/`, standard library, throwaway `$HOME`, no network, no sudo) and GitHub
   Actions on Python 3.8, 3.10 and 3.13; `scripts/submit.sh` to commit, push, open the pull
@@ -83,6 +88,12 @@ Changed
   `next --json` is unchanged. The home screen no longer suggests a command.
 - The home screen and `pentrail log` print the logbook without Markdown, and the home
   screen shows the start-to-report guide only when no project is active.
+- **Large projects are fast again.** On a project with 60 hosts, 3000 commands, 4000 web
+  paths, 600 leads and 300 notes, `shot` and `next` took 1.6 s and now take 0.2 s,
+  `report --html` 1.8 s and now 0.35 s, and `next --json` (what PeTe reads) 0.37 s and
+  now 0.08 s. The docs no longer rebuild the note links for every host and note, a
+  command is found by its id instead of by a search, and which commands ran against which
+  host is worked out in one pass instead of per host (with the same answer).
 - The README is a third of its old length; the details live in `pentrail help <command>`.
 - `pentrail.py` is executable in the repository, so `./pentrail.py` runs it from a checkout.
 
